@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Gestione Condominio
+GenericName=Gestionale condominiale
+Comment=Anagrafica, millesimi, incassi, piani rate e contabilità del condominio
+Exec=condominio
+Icon=condominio
+Categories=Office;Finance;
+Terminal=false
