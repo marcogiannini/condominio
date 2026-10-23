@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: ./packaging/build-appimage.sh
+      - run: bash packaging/build-appimage.sh
       - uses: actions/upload-artifact@v4
         with:
           name: condominio-linux-appimage
