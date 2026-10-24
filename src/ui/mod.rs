@@ -6,16 +6,17 @@ use crate::Db;
 use eframe::egui::{self, Color32, RichText, Ui};
 
 mod agenda;
-mod anagrafica;
 mod assemblee;
 mod bacheca;
 mod banca;
 mod bilanci;
 mod condomini;
 mod conformita;
+mod conti;
 mod contabilita;
 mod dashboard;
 mod documenti;
+mod elenco;
 mod fisco;
 mod fornitori;
 mod impostazioni;
@@ -23,13 +24,16 @@ mod incassi;
 mod millesimi;
 mod morosita;
 mod piani;
+mod persone;
 mod pratiche;
 mod preventivo;
+mod rate;
 mod riparti;
 mod segnalazioni;
 mod struttura;
+mod unita;
 
-use struttura::{Cmd, GRUPPI, MENU};
+use struttura::{Cmd, GRUPPI, INIZIO_BLOCCO_2, INIZIO_BLOCCO_3, MENU};
 
 // ------------------------------------------------------------------ messaggi
 
@@ -73,8 +77,12 @@ pub enum Azione {
 #[derive(Clone, Copy, Debug)]
 pub enum AzioneApp {
     Apri(i64),
+    /// Imposta condominio ed esercizio di lavoro.
+    Contesto(i64, Option<i64>),
+    Vai(Sezione, Option<usize>),
     Nuovo,
     Demo,
+    Guida,
 }
 
 /// Contesto condiviso dalle schermate durante un frame.
@@ -240,7 +248,10 @@ pub enum Sezione {
     Dashboard,
     Condomini,
     Agenda,
-    Anagrafica,
+    Unita,
+    Persone,
+    Conti,
+    Rate,
     Millesimi,
     Preventivo,
     PianiRate,
@@ -272,7 +283,10 @@ struct Stati {
     morosita: morosita::Stato,
     pratiche: pratiche::Stato,
     dashboard: dashboard::Stato,
-    anagrafica: anagrafica::Stato,
+    persone: persone::Stato,
+    unita: unita::Stato,
+    conti: conti::Stato,
+    rate: rate::Stato,
     millesimi: millesimi::Stato,
     preventivo: preventivo::Stato,
     piani: piani::Stato,
@@ -289,7 +303,6 @@ struct Stati {
 impl Stati {
     fn imposta_tab(&mut self, s: Sezione, t: usize) {
         match s {
-            Sezione::Anagrafica => self.anagrafica.imposta_tab(t),
             Sezione::Bacheca => self.bacheca.imposta_tab(t),
             Sezione::Bilanci => self.bilanci.imposta_tab(t),
             Sezione::Conformita => self.conformita.imposta_tab(t),
@@ -313,7 +326,10 @@ pub struct App {
     /// Gruppo (pulsante della barra delle sezioni) attivo e scheda scelta dalla barra delle viste.
     gruppo: usize,
     tab: Option<usize>,
-    scuro: bool,
+    titolo_finestra: String,
+    calc: Option<(String, String)>,
+    msg_chiave: String,
+    msg_inizio: f64,
     selettore: bool,
     guida: bool,
     rev_condomini: u64,
@@ -327,11 +343,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, db: Db) -> Self {
-        applica_tema(&cc.egui_ctx, false);
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
-        cc.egui_ctx.set_style(style);
+        applica_tema(&cc.egui_ctx);
         let condomini = db.elenco_condomini().unwrap_or_default();
         let cond = condomini.first().map(|c| c.id);
         let mut app = App {
@@ -342,7 +354,10 @@ impl App {
             sezione: Sezione::Dashboard,
             gruppo: 0,
             tab: None,
-            scuro: false,
+            titolo_finestra: String::new(),
+            calc: None,
+            msg_chiave: String::new(),
+            msg_inizio: 0.0,
             selettore: false,
             guida: false,
             rev_condomini: 1,
@@ -411,56 +426,6 @@ impl App {
         if era_condominio {
             self.ricarica_condomini();
         }
-    }
-
-    fn barra_alta(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("alto").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Condominio (F2)").strong());
-                let voci: Vec<(i64, String)> = self.condomini.iter().map(|c| (c.id, c.nome.clone())).collect();
-                let prima = self.cond;
-                scegli(ui, "sel_cond", &mut self.cond, &voci, "");
-                if self.cond != prima {
-                    self.scegli_esercizio_predefinito();
-                    self.rev += 1;
-                }
-                if ui.button("+ Nuovo").clicked() {
-                    self.nuovo_cond = Some(Condominio::default());
-                }
-                ui.separator();
-                if let Some(c) = self.cond {
-                    ui.label(RichText::new("Esercizio").strong());
-                    let es = self.db.elenco_esercizi(c).unwrap_or_default();
-                    let voci: Vec<(i64, String)> =
-                        es.iter().map(|e| (e.id, format!("{} ({})", e.nome, if e.stato == "aperto" { "aperto" } else { "chiuso" }))).collect();
-                    let prima = self.esercizio;
-                    scegli(ui, "sel_es", &mut self.esercizio, &voci, "");
-                    if prima != self.esercizio {
-                        self.rev += 1;
-                    }
-                    let n = self.db.notifiche_non_lette(c).unwrap_or(0);
-                    if n > 0 {
-                        ui.separator();
-                        if ui.button(RichText::new(format!("{} notifiche", n)).color(ARANCIO)).clicked() {
-                            self.vai(Sezione::Dashboard, None);
-                        }
-                    }
-                }
-            });
-            if let Some(m) = &self.msg {
-                let col = if m.livello == Livello::Ok { VERDE } else { ROSSO };
-                let mut chiudi = false;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&m.testo).color(col).strong());
-                    if ui.small_button("x").clicked() {
-                        chiudi = true;
-                    }
-                });
-                if chiudi {
-                    self.msg = None;
-                }
-            }
-        });
     }
 
     fn finestre(&mut self, ctx: &egui::Context) {
@@ -593,10 +558,7 @@ impl App {
             Cmd::Seleziona => self.selettore = true,
             Cmd::Guida => self.guida = true,
             Cmd::Esci => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Cmd::Tema => {
-                self.scuro = !self.scuro;
-                applica_tema(ctx, self.scuro);
-            }
+            Cmd::Calcolatrice => self.calc = Some((String::new(), String::new())),
             Cmd::StampaRendiconto => match self.esercizio {
                 None => self.notifica(Livello::Err, "Scegli prima un esercizio"),
                 Some(es) => match self.db.html_rendiconto(es).and_then(|h| apri_html_file("rendiconto", &h)) {
@@ -640,56 +602,108 @@ impl App {
         cmd
     }
 
-    /// Barra dei pulsanti-sezione: Agenda, Condomìni, Unità, Tabelle, Conti, Rate, Movimenti, …
+    /// Barra dei pulsanti in stile Domustudio: Agenda … Movimenti | Attività … Fornitori | Calc., Pubblica, Aiuto.
     fn barra_sezioni(&mut self, ctx: &egui::Context) {
-        let mut scelto = None;
-        let fondo = ctx.style().visuals.faint_bg_color;
-        egui::TopBottomPanel::top("sezioni").frame(egui::Frame::none().fill(fondo).inner_margin(egui::Margin::symmetric(8.0, 4.0))).show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (i, g) in GRUPPI.iter().enumerate() {
-                    let attivo = self.gruppo == i;
-                    let (rect, risposta) = ui.allocate_exact_size(egui::vec2(84.0, 56.0), egui::Sense::click());
-                    let v = ui.visuals();
-                    let (sfondo, testo) = if attivo {
-                        (v.selection.bg_fill, Color32::WHITE)
-                    } else if risposta.hovered() {
-                        (v.widgets.hovered.bg_fill, v.strong_text_color())
-                    } else {
-                        (Color32::TRANSPARENT, v.text_color())
-                    };
-                    let p = ui.painter();
-                    p.rect_filled(rect, 4.0, sfondo);
-                    p.text(rect.center_top() + egui::vec2(0.0, 19.0), egui::Align2::CENTER_CENTER, g.icona, egui::FontId::proportional(22.0), testo);
-                    p.text(rect.center_bottom() - egui::vec2(0.0, 11.0), egui::Align2::CENTER_CENTER, g.nome, egui::FontId::proportional(12.5), testo);
-                    if risposta.clicked() {
-                        scelto = Some(i);
+        let mut scelto: Option<usize> = None;
+        let mut cmd: Option<Cmd> = None;
+        let attivo = self.gruppo;
+        egui::TopBottomPanel::top("sezioni")
+            .frame(egui::Frame::none().fill(Color32::WHITE).inner_margin(egui::Margin::symmetric(6.0, 3.0)).stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 215, 215))))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    for (i, g) in GRUPPI.iter().enumerate() {
+                        if i == INIZIO_BLOCCO_2 {
+                            separatore_barra(ui);
+                        }
+                        if i == INIZIO_BLOCCO_3 {
+                            separatore_barra(ui);
+                            if pulsante_barra(ui, "🔢", "Calc.", elenco::BLU, false) {
+                                cmd = Some(Cmd::Calcolatrice);
+                            }
+                        }
+                        if pulsante_barra(ui, g.icona, g.nome, g.colore, attivo == i) {
+                            scelto = Some(i);
+                        }
                     }
-                }
+                    if pulsante_barra(ui, "❓", "Aiuto", elenco::BLU, false) {
+                        cmd = Some(Cmd::Guida);
+                    }
+                });
             });
-        });
         if let Some(i) = scelto {
             let v = GRUPPI[i].voci[0];
             self.vai(v.sez, v.tab);
             self.gruppo = i;
         }
+        if let Some(c) = cmd {
+            self.esegui_cmd(ctx, c);
+        }
     }
 
-    fn barra_stato(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("stato").show(ctx, |ui| {
+    /// Titolo della finestra: «Gestione Condominio > Condominio > Esercizio (dal – al)», come Domustudio.
+    fn aggiorna_titolo(&mut self, ctx: &egui::Context) {
+        let mut t = String::from("Gestione Condominio");
+        if let Some(c) = self.condomini.iter().find(|c| Some(c.id) == self.cond) {
+            t.push_str(&format!(" > {}", c.nome));
+            let es = self.cond.and_then(|c| self.db.elenco_esercizi(c).ok()).and_then(|v| v.into_iter().find(|e| Some(e.id) == self.esercizio));
+            if let Some(e) = es {
+                t.push_str(&format!(" > {}    ({} - {})", e.nome, data_it(&e.dal), data_it(&e.al)));
+            }
+        }
+        if t != self.titolo_finestra {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(t.clone()));
+            self.titolo_finestra = t;
+        }
+    }
+
+    /// Messaggio di esito (verde/rosso) in basso; sparisce da solo dopo qualche secondo.
+    fn barra_messaggi(&mut self, ctx: &egui::Context) {
+        let Some(m) = &self.msg else { return };
+        let ora = ctx.input(|i| i.time);
+        if self.msg_chiave != m.testo {
+            self.msg_chiave = m.testo.clone();
+            self.msg_inizio = ora;
+        }
+        let col = if m.livello == Livello::Ok { VERDE } else { ROSSO };
+        let mut chiudi = false;
+        egui::TopBottomPanel::bottom("messaggi").frame(egui::Frame::none().fill(Color32::from_rgb(250, 250, 250)).inner_margin(egui::Margin::symmetric(8.0, 3.0)).stroke(egui::Stroke::new(1.0_f32, col))).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let cond = self.condomini.iter().find(|c| Some(c.id) == self.cond).map(|c| c.nome.clone());
-                ui.label(RichText::new(format!("Condominio: {}", cond.as_deref().unwrap_or("—"))).strong());
-                ui.separator();
-                let es = self.cond.and_then(|c| self.db.elenco_esercizi(c).ok()).and_then(|v| v.into_iter().find(|e| Some(e.id) == self.esercizio));
-                match es {
-                    Some(e) => ui.label(format!("Esercizio {} ({} – {}, {})", e.nome, data_it(&e.dal), data_it(&e.al), e.stato)),
-                    None => ui.label("Nessun esercizio"),
-                };
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("F1 Guida   ·   F2 Cambia condominio / esercizio").small());
-                });
+                ui.label(RichText::new(&m.testo).color(col).strong());
+                if ui.small_button("x").clicked() {
+                    chiudi = true;
+                }
             });
         });
+        if m.livello == Livello::Ok && ora - self.msg_inizio > 7.0 {
+            chiudi = true;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if chiudi {
+            self.msg = None;
+            self.msg_chiave.clear();
+        }
+    }
+
+    fn calcolatrice(&mut self, ctx: &egui::Context) {
+        let Some((espr, ris)) = &mut self.calc else { return };
+        let mut aperta = true;
+        egui::Window::new("Calcolatrice").open(&mut aperta).collapsible(false).resizable(false).default_width(260.0).show(ctx, |ui| {
+            let r = ui.add(egui::TextEdit::singleline(espr).desired_width(240.0).hint_text("es. 1250,50 * 0,04"));
+            let invio = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("=").clicked() || invio {
+                *ris = match calcola(espr) {
+                    Some(v) => format!("{:.2}", v).replace('.', ","),
+                    None => "espressione non valida".into(),
+                };
+            }
+            if !ris.is_empty() {
+                ui.label(RichText::new(ris.as_str()).size(18.0).strong());
+            }
+        });
+        if !aperta {
+            self.calc = None;
+        }
     }
 
     /// Finestre di servizio: selettore condominio/esercizio (F2) e guida rapida (F1).
@@ -740,12 +754,13 @@ impl App {
             let mut aperta = true;
             egui::Window::new("Guida rapida").open(&mut aperta).collapsible(false).default_width(520.0).show(ctx, |ui| {
                 ui.label(RichText::new("Come ci si muove").strong());
-                ui.label("• La barra dei pulsanti in alto sceglie l'area di lavoro (Agenda, Condomìni, Unità, Tabelle, Conti, Rate, Movimenti, Attività, Archivio, Assemblee, Persone, Fornitori); sotto compaiono le viste di quell'area.");
+                ui.label("• La barra dei pulsanti in alto sceglie l'area di lavoro (Agenda, Condomìni, Unità, Tabelle, Conti, Rate, Movimenti, Attività, Parti comuni, Assemblee, Persone, Fornitori, Pubblica). Se l'area ha più viste, compaiono come schede sopra l'elenco.");
+                ui.label("• Ogni area ha a sinistra l'elenco, a destra la scheda della riga selezionata e in basso le azioni (Nuovo, Elimina, Excel…).");
+                ui.label("• Il condominio e l'esercizio di lavoro si scelgono in «Condomìni» cliccando la riga (F2 apre il selettore rapido); sono indicati nel titolo della finestra.");
                 ui.label("• I menu File, Preventivo, Consuntivo, Comunicazioni, Fisco e Strumenti raggiungono le stesse schermate e le stampe.");
-                ui.label("• Condominio ed esercizio scelti sono il contesto di tutte le schermate: F2 per cambiarli.");
                 ui.add_space(6.0);
                 ui.label(RichText::new("Ciclo di lavoro tipico").strong());
-                ui.label("1. Condomìni → Unità → Persone → Tabelle millesimali.\n2. Conti: preventivo per voce, riparti sulle tabelle.\n3. Rate: piano con delibera, poi Movimenti → Versamento rate.\n4. Movimenti → Fatture / Gestione; Banca per la riconciliazione.\n5. Consuntivo: bilancio, riparto individuale, conguaglio.\n6. Fisco: F24, CU e 770. Assemblee e verbali dal pulsante Assemblee.");
+                ui.label("1. Condomìni (nuovo condominio ed esercizio) → Unità → Persone → Tabelle millesimali.\n2. Conti: preventivo per voce, riparti sulle tabelle.\n3. Rate: piano con delibera, poi Movimenti → Versamento rate.\n4. Movimenti → Fatture / Gestione; Banca per la riconciliazione.\n5. Consuntivo: bilancio, riparto individuale, conguaglio.\n6. Fisco: F24, CU e 770. Assemblee e verbali dal pulsante Assemblee.");
                 ui.add_space(6.0);
                 ui.label(RichText::new("Scorciatoie").strong());
                 ui.label("F1 questa guida · F2 cambia condominio/esercizio · Esc chiude le finestre di servizio");
@@ -757,18 +772,138 @@ impl App {
     }
 }
 
-fn applica_tema(ctx: &egui::Context, scuro: bool) {
-    let mut v = if scuro { egui::Visuals::dark() } else { egui::Visuals::light() };
-    if !scuro {
-        v.panel_fill = Color32::from_rgb(243, 245, 248);
-        v.window_fill = Color32::WHITE;
-        v.extreme_bg_color = Color32::WHITE;
-        v.faint_bg_color = Color32::from_rgb(228, 233, 241);
-        v.selection.bg_fill = Color32::from_rgb(38, 99, 168);
-        v.selection.stroke.color = Color32::WHITE;
-        v.hyperlink_color = Color32::from_rgb(38, 99, 168);
+fn separatore_barra(ui: &mut Ui) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 54.0), egui::Sense::hover());
+    ui.painter().line_segment([r.center_top() + egui::vec2(0.0, 6.0), r.center_bottom() - egui::vec2(0.0, 6.0)], egui::Stroke::new(1.0_f32, Color32::from_rgb(200, 200, 200)));
+}
+
+/// Pulsante della barra principale: icona colorata sopra, nome sotto; attivo = fondo grigio.
+fn pulsante_barra(ui: &mut Ui, icona: &str, nome: &str, colore: Color32, attivo: bool) -> bool {
+    let font = egui::FontId::proportional(12.0);
+    let g = ui.painter().layout_no_wrap(nome.to_string(), font, elenco::TESTO);
+    let larg = (g.size().x + 14.0).max(52.0);
+    let (rect, risposta) = ui.allocate_exact_size(egui::vec2(larg, 54.0), egui::Sense::click());
+    let p = ui.painter();
+    if attivo {
+        p.rect_filled(rect, 2.0, Color32::from_rgb(214, 214, 214));
+    } else if risposta.hovered() {
+        p.rect_filled(rect, 2.0, Color32::from_rgb(228, 238, 250));
     }
+    p.text(rect.center_top() + egui::vec2(0.0, 19.0), egui::Align2::CENTER_CENTER, icona, egui::FontId::proportional(24.0), colore);
+    p.galley(egui::pos2(rect.center().x - g.size().x / 2.0, rect.bottom() - 7.0 - g.size().y / 2.0 - 3.0), g, elenco::TESTO);
+    risposta.clicked()
+}
+
+/// Calcolatrice minima: + − × ÷ e parentesi, virgola o punto decimale.
+fn calcola(s: &str) -> Option<f64> {
+    let t: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).map(|c| if c == ',' { '.' } else if c == 'x' || c == 'X' { '*' } else { c }).collect();
+    let mut i = 0;
+    let v = somma(&t, &mut i)?;
+    if i == t.len() && v.is_finite() {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+fn somma(t: &[char], i: &mut usize) -> Option<f64> {
+    let mut v = prodotto(t, i)?;
+    while *i < t.len() && (t[*i] == '+' || t[*i] == '-') {
+        let op = t[*i];
+        *i += 1;
+        let r = prodotto(t, i)?;
+        if op == '+' {
+            v += r
+        } else {
+            v -= r
+        }
+    }
+    Some(v)
+}
+
+fn prodotto(t: &[char], i: &mut usize) -> Option<f64> {
+    let mut v = atomo(t, i)?;
+    while *i < t.len() && (t[*i] == '*' || t[*i] == '/') {
+        let op = t[*i];
+        *i += 1;
+        let r = atomo(t, i)?;
+        if op == '*' {
+            v *= r
+        } else {
+            v /= r
+        }
+    }
+    Some(v)
+}
+
+fn atomo(t: &[char], i: &mut usize) -> Option<f64> {
+    if *i >= t.len() {
+        return None;
+    }
+    match t[*i] {
+        '-' => {
+            *i += 1;
+            Some(-atomo(t, i)?)
+        }
+        '(' => {
+            *i += 1;
+            let v = somma(t, i)?;
+            if *i < t.len() && t[*i] == ')' {
+                *i += 1;
+                Some(v)
+            } else {
+                None
+            }
+        }
+        _ => {
+            let inizio = *i;
+            while *i < t.len() && (t[*i].is_ascii_digit() || t[*i] == '.') {
+                *i += 1;
+            }
+            t[inizio..*i].iter().collect::<String>().parse().ok()
+        }
+    }
+}
+
+fn applica_tema(ctx: &egui::Context) {
+    let mut v = egui::Visuals::light();
+    v.panel_fill = Color32::WHITE;
+    v.window_fill = Color32::WHITE;
+    v.extreme_bg_color = Color32::WHITE;
+    v.faint_bg_color = Color32::from_rgb(248, 246, 232);
+    v.selection.bg_fill = elenco::SELEZIONE;
+    v.selection.stroke.color = elenco::TESTO;
+    v.hyperlink_color = Color32::from_rgb(0, 70, 200);
+    v.widgets.noninteractive.fg_stroke.color = elenco::TESTO;
+    v.widgets.noninteractive.bg_stroke.color = Color32::from_rgb(215, 215, 215);
+    v.widgets.inactive.bg_fill = Color32::from_rgb(238, 238, 238);
+    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(238, 238, 238);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(222, 234, 248);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(222, 234, 248);
+    let r = egui::Rounding::same(2.0);
+    v.widgets.noninteractive.rounding = r;
+    v.widgets.inactive.rounding = r;
+    v.widgets.hovered.rounding = r;
+    v.widgets.active.rounding = r;
+    v.window_rounding = egui::Rounding::same(3.0);
     ctx.set_visuals(v);
+    let mut style = (*ctx.style()).clone();
+    use egui::{FontFamily, FontId, TextStyle};
+    style.text_styles.insert(TextStyle::Body, FontId::new(13.0, FontFamily::Proportional));
+    style.text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
+    style.text_styles.insert(TextStyle::Small, FontId::new(11.5, FontFamily::Proportional));
+    style.text_styles.insert(TextStyle::Heading, FontId::new(18.0, FontFamily::Proportional));
+    style.text_styles.insert(TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace));
+    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+    style.spacing.button_padding = egui::vec2(8.0, 3.0);
+    style.spacing.interact_size.y = 22.0;
+    ctx.set_style(style);
+}
+
+/// Schermate che gestiscono da sole pannelli e scorrimento (elenco + scheda + barra azioni).
+fn a_pannelli(s: Sezione, tab: Option<usize>) -> bool {
+    matches!(s, Sezione::Condomini | Sezione::Agenda | Sezione::Unita | Sezione::Persone | Sezione::Millesimi | Sezione::Conti | Sezione::Rate)
+        || matches!((s, tab), (Sezione::Contabilita, Some(1)) | (Sezione::Fornitori, Some(0)))
 }
 
 impl eframe::App for App {
@@ -787,57 +922,66 @@ impl eframe::App for App {
             self.esegui_cmd(ctx, cmd);
         }
         self.barra_sezioni(ctx);
-        self.barra_alta(ctx);
-        self.barra_stato(ctx);
+        self.aggiorna_titolo(ctx);
+        self.barra_messaggi(ctx);
 
         let mut prossima: Option<(Sezione, Option<usize>)> = None;
         let mut azione_app: Option<AzioneApp> = None;
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::WHITE)).show(ctx, |ui| {
             let Some(cond) = self.cond else {
                 self.benvenuto(ui);
                 return;
             };
-            // barra delle viste del gruppo attivo
+            // viste del gruppo attivo, come schede sopra l'elenco
             let gruppo = &GRUPPI[self.gruppo];
             if gruppo.voci.len() > 1 {
-                ui.horizontal_wrapped(|ui| {
-                    for v in gruppo.voci {
-                        let attiva = v.sez == self.sezione && v.tab == self.tab;
-                        if ui.selectable_label(attiva, RichText::new(v.nome).size(14.0)).clicked() {
-                            prossima = Some((v.sez, v.tab));
-                        }
-                    }
-                });
-                ui.separator();
+                let attiva = gruppo.voci.iter().position(|v| v.sez == self.sezione && v.tab == self.tab).unwrap_or(0);
+                let mut idx = attiva;
+                let nomi: Vec<&str> = gruppo.voci.iter().map(|v| v.nome).collect();
+                egui::Frame::none().inner_margin(egui::Margin { left: 4.0, right: 4.0, top: 4.0, bottom: 2.0 }).show(ui, |ui| elenco::schede(ui, &mut idx, &nomi));
+                if idx != attiva {
+                    prossima = Some((gruppo.voci[idx].sez, gruppo.voci[idx].tab));
+                }
             }
             let nome = self.condomini.iter().find(|c| c.id == cond).map(|c| c.nome.clone()).unwrap_or_default();
             let sezione = self.sezione;
             let schede = self.tab.is_none();
+            let panelli = a_pannelli(sezione, self.tab);
             let App { db, esercizio, rev, msg, richiesta, naviga, st, .. } = self;
             let mut c = Ctx { db, cond, cond_nome: &nome, esercizio: *esercizio, rev, msg, richiesta, naviga, app: &mut azione_app, schede };
-            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| match sezione {
-                Sezione::Dashboard => dashboard::mostra(&mut c, &mut st.dashboard, ui),
-                Sezione::Condomini => condomini::mostra(&mut c, &mut st.condomini, ui),
-                Sezione::Agenda => agenda::mostra(&mut c, &mut st.agenda, ui),
-                Sezione::Bilanci => bilanci::mostra(&mut c, &mut st.bilanci, ui),
-                Sezione::Morosita => morosita::mostra(&mut c, &mut st.morosita, ui),
-                Sezione::Banca => banca::mostra(&mut c, &mut st.banca, ui),
-                Sezione::Fisco => fisco::mostra(&mut c, &mut st.fisco, ui),
-                Sezione::Pratiche => pratiche::mostra(&mut c, &mut st.pratiche, ui),
-                Sezione::Anagrafica => anagrafica::mostra(&mut c, &mut st.anagrafica, ui),
-                Sezione::Millesimi => millesimi::mostra(&mut c, &mut st.millesimi, ui),
-                Sezione::Preventivo => preventivo::mostra(&mut c, &mut st.preventivo, ui),
-                Sezione::PianiRate => piani::mostra(&mut c, &mut st.piani, ui),
-                Sezione::Incassi => incassi::mostra(&mut c, &mut st.incassi, ui),
-                Sezione::Fornitori => fornitori::mostra(&mut c, &mut st.fornitori, ui),
-                Sezione::Contabilita => contabilita::mostra(&mut c, &mut st.contabilita, ui),
-                Sezione::Documenti => documenti::mostra(&mut c, &mut st.documenti, ui),
-                Sezione::Segnalazioni => segnalazioni::mostra(&mut c, &mut st.segnalazioni, ui),
-                Sezione::Assemblee => assemblee::mostra(&mut c, &mut st.assemblee, ui),
-                Sezione::Bacheca => bacheca::mostra(&mut c, &mut st.bacheca, ui),
-                Sezione::Conformita => conformita::mostra(&mut c, &mut st.conformita, ui),
-                Sezione::Impostazioni => impostazioni::mostra(&mut c, &mut st.impostazioni, ui),
-            });
+            let mut disegna = |c: &mut Ctx, ui: &mut Ui| match sezione {
+                Sezione::Dashboard => dashboard::mostra(c, &mut st.dashboard, ui),
+                Sezione::Condomini => condomini::mostra(c, &mut st.condomini, ui),
+                Sezione::Agenda => agenda::mostra(c, &mut st.agenda, ui),
+                Sezione::Bilanci => bilanci::mostra(c, &mut st.bilanci, ui),
+                Sezione::Morosita => morosita::mostra(c, &mut st.morosita, ui),
+                Sezione::Banca => banca::mostra(c, &mut st.banca, ui),
+                Sezione::Fisco => fisco::mostra(c, &mut st.fisco, ui),
+                Sezione::Pratiche => pratiche::mostra(c, &mut st.pratiche, ui),
+                Sezione::Unita => unita::mostra(c, &mut st.unita, ui),
+                Sezione::Persone => persone::mostra(c, &mut st.persone, ui),
+                Sezione::Conti => conti::mostra(c, &mut st.conti, ui),
+                Sezione::Rate => rate::mostra(c, &mut st.rate, ui),
+                Sezione::Millesimi => millesimi::mostra(c, &mut st.millesimi, ui),
+                Sezione::Preventivo => preventivo::mostra(c, &mut st.preventivo, ui),
+                Sezione::PianiRate => piani::mostra(c, &mut st.piani, ui),
+                Sezione::Incassi => incassi::mostra(c, &mut st.incassi, ui),
+                Sezione::Fornitori => fornitori::mostra(c, &mut st.fornitori, ui),
+                Sezione::Contabilita => contabilita::mostra(c, &mut st.contabilita, ui),
+                Sezione::Documenti => documenti::mostra(c, &mut st.documenti, ui),
+                Sezione::Segnalazioni => segnalazioni::mostra(c, &mut st.segnalazioni, ui),
+                Sezione::Assemblee => assemblee::mostra(c, &mut st.assemblee, ui),
+                Sezione::Bacheca => bacheca::mostra(c, &mut st.bacheca, ui),
+                Sezione::Conformita => conformita::mostra(c, &mut st.conformita, ui),
+                Sezione::Impostazioni => impostazioni::mostra(c, &mut st.impostazioni, ui),
+            };
+            if panelli {
+                disegna(&mut c, ui);
+            } else {
+                egui::Frame::none().inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| disegna(&mut c, ui));
+                });
+            }
             if let Some(s) = self.naviga.take() {
                 prossima = Some((s, None));
             }
@@ -849,14 +993,25 @@ impl eframe::App for App {
         match azione_app {
             Some(AzioneApp::Nuovo) => self.nuovo_cond = Some(Condominio::default()),
             Some(AzioneApp::Demo) => self.crea_demo(),
+            Some(AzioneApp::Guida) => self.guida = true,
+            Some(AzioneApp::Vai(s, t)) => self.vai(s, t),
             Some(AzioneApp::Apri(id)) => {
                 self.cond = Some(id);
                 self.scegli_esercizio_predefinito();
                 self.rev += 1;
             }
+            Some(AzioneApp::Contesto(cond, es)) => {
+                self.cond = Some(cond);
+                match es {
+                    Some(e) => self.esercizio = Some(e),
+                    None => self.scegli_esercizio_predefinito(),
+                }
+                self.rev += 1;
+            }
             None => {}
         }
         self.finestre_extra(ctx);
+        self.calcolatrice(ctx);
         self.finestre(ctx);
     }
 }
@@ -883,7 +1038,7 @@ mod prova {
         let mut st = Stati::default();
         let (mut rev, mut msg, mut richiesta, mut naviga, mut app) = (1u64, None, None, None, None);
         let sezioni = [
-            Sezione::Dashboard, Sezione::Condomini, Sezione::Agenda, Sezione::Anagrafica, Sezione::Millesimi, Sezione::Preventivo, Sezione::PianiRate,
+            Sezione::Dashboard, Sezione::Condomini, Sezione::Agenda, Sezione::Unita, Sezione::Persone, Sezione::Conti, Sezione::Rate, Sezione::Millesimi, Sezione::Preventivo, Sezione::PianiRate,
             Sezione::Bilanci, Sezione::Incassi, Sezione::Morosita, Sezione::Fornitori, Sezione::Contabilita, Sezione::Banca,
             Sezione::Fisco, Sezione::Assemblee, Sezione::Segnalazioni, Sezione::Pratiche, Sezione::Bacheca, Sezione::Documenti,
             Sezione::Conformita, Sezione::Impostazioni,
@@ -904,7 +1059,6 @@ mod prova {
                 st.contabilita.imposta_tab(tab % 3);
                 st.incassi.imposta_tab(tab % 4);
                 st.bacheca.imposta_tab(tab % 2);
-                st.anagrafica.imposta_tab(tab % 2);
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut c = Ctx { db: &db, cond, cond_nome: "Esempio", esercizio, rev: &mut rev, msg: &mut msg, richiesta: &mut richiesta, naviga: &mut naviga, app: &mut app, schede: true };
@@ -912,10 +1066,13 @@ mod prova {
                             Sezione::Dashboard => dashboard::mostra(&mut c, &mut st.dashboard, ui),
                             Sezione::Condomini => condomini::mostra(&mut c, &mut st.condomini, ui),
                             Sezione::Agenda => agenda::mostra(&mut c, &mut st.agenda, ui),
-                            Sezione::Anagrafica => anagrafica::mostra(&mut c, &mut st.anagrafica, ui),
+                            Sezione::Unita => unita::mostra(&mut c, &mut st.unita, ui),
+                            Sezione::Persone => persone::mostra(&mut c, &mut st.persone, ui),
+                            Sezione::Conti => conti::mostra(&mut c, &mut st.conti, ui),
+                            Sezione::Rate => rate::mostra(&mut c, &mut st.rate, ui),
                             Sezione::Millesimi => millesimi::mostra(&mut c, &mut st.millesimi, ui),
                             Sezione::Preventivo => {
-                                for tab in 0..4 {
+                                for tab in 1..4 {
                                     st.preventivo.imposta_tab(tab);
                                     preventivo::mostra(&mut c, &mut st.preventivo, ui);
                                 }

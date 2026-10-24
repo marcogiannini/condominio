@@ -2,6 +2,7 @@
 //! barra dei menu, barra dei pulsanti-sezione e, per ogni sezione, le viste (schede) disponibili.
 
 use super::Sezione;
+use eframe::egui::Color32;
 
 #[derive(Clone, Copy)]
 pub struct Voce {
@@ -18,32 +19,43 @@ const fn v(sez: Sezione, tab: Option<usize>, nome: &'static str) -> Voce {
 pub struct Gruppo {
     pub nome: &'static str,
     pub icona: &'static str,
+    pub colore: Color32,
     pub voci: &'static [Voce],
 }
 
 use Sezione as S;
 
-/// Pulsanti della barra delle sezioni (Agenda, Condomìni, Unità, Tabelle, Conti, Rate, Movimenti, …).
+const BLU: Color32 = Color32::from_rgb(40, 110, 190);
+const ROSSO: Color32 = Color32::from_rgb(210, 60, 40);
+const VERDE: Color32 = Color32::from_rgb(50, 150, 70);
+const ARANCIO: Color32 = Color32::from_rgb(230, 140, 20);
+const GRIGIO: Color32 = Color32::from_rgb(90, 90, 100);
+
+/// Pulsanti della barra principale, nello stesso ordine di Domustudio:
+/// Agenda … Movimenti | Attività … Fornitori | Calc., Pubblica, Aiuto.
 pub static GRUPPI: &[Gruppo] = &[
-    Gruppo { nome: "Agenda", icona: "📅", voci: &[v(S::Dashboard, None, "Cruscotto"), v(S::Agenda, None, "Scadenze e promemoria")] },
+    Gruppo { nome: "Agenda", icona: "📅", colore: ROSSO, voci: &[v(S::Agenda, None, "Agenda"), v(S::Dashboard, None, "Cruscotto e notifiche")] },
     Gruppo {
         nome: "Condomìni",
         icona: "🏢",
+        colore: BLU,
         voci: &[
-            v(S::Condomini, None, "Condomìni"),
-            v(S::Preventivo, Some(2), "Esercizi"),
+            v(S::Condomini, None, "Condomìni ed esercizi"),
             v(S::Preventivo, Some(1), "Delibere"),
+            v(S::Preventivo, Some(2), "Esercizi (elenco)"),
             v(S::Contabilita, Some(0), "Conti correnti"),
             v(S::Impostazioni, None, "Opzioni e backup"),
         ],
     },
-    Gruppo { nome: "Unità", icona: "🚪", voci: &[v(S::Anagrafica, Some(1), "Unità e titolarità")] },
-    Gruppo { nome: "Tabelle", icona: "📊", voci: &[v(S::Millesimi, None, "Tabelle millesimali"), v(S::Preventivo, Some(3), "Riparti e riduzioni")] },
-    Gruppo { nome: "Conti", icona: "📒", voci: &[v(S::Preventivo, Some(0), "Piano dei conti e preventivo")] },
+    Gruppo { nome: "Unità", icona: "🚪", colore: BLU, voci: &[v(S::Unita, None, "Unità e titolarità")] },
+    Gruppo { nome: "Tabelle", icona: "📊", colore: ARANCIO, voci: &[v(S::Millesimi, None, "Tabelle millesimali"), v(S::Preventivo, Some(3), "Riparti e riduzioni")] },
+    Gruppo { nome: "Conti", icona: "📒", colore: GRIGIO, voci: &[v(S::Conti, None, "Piano dei conti e preventivo")] },
     Gruppo {
         nome: "Rate",
         icona: "💶",
+        colore: BLU,
         voci: &[
+            v(S::Rate, None, "Rate per condòmino"),
             v(S::PianiRate, None, "Piani rate"),
             v(S::Morosita, Some(0), "Rate scadute"),
             v(S::Morosita, Some(1), "Solleciti"),
@@ -54,26 +66,33 @@ pub static GRUPPI: &[Gruppo] = &[
     Gruppo {
         nome: "Movimenti",
         icona: "🔁",
+        colore: ARANCIO,
         voci: &[
-            v(S::Contabilita, Some(1), "Gestione"),
+            v(S::Contabilita, Some(1), "Movimenti di gestione"),
             v(S::Fornitori, Some(1), "Fatture"),
-            v(S::Incassi, Some(0), "Versamento rate"),
-            v(S::Incassi, Some(2), "Personali"),
-            v(S::Contabilita, Some(0), "Giroconti"),
+            v(S::Incassi, Some(2), "Movimenti personali"),
+            v(S::Incassi, Some(0), "Versamenti rate"),
+            v(S::Contabilita, Some(0), "Giroconti e conti"),
             v(S::Incassi, Some(3), "Operazioni su fondi"),
             v(S::Banca, None, "Banca"),
         ],
     },
-    Gruppo { nome: "Attività", icona: "🛠", voci: &[v(S::Segnalazioni, None, "Segnalazioni guasto"), v(S::Pratiche, None, "Interventi, sinistri, legali")] },
-    Gruppo { nome: "Archivio", icona: "🗂", voci: &[v(S::Documenti, None, "Documenti")] },
-    Gruppo { nome: "Assemblee", icona: "👥", voci: &[v(S::Assemblee, None, "Assemblee e verbali")] },
-    Gruppo { nome: "Persone", icona: "👤", voci: &[v(S::Anagrafica, Some(0), "Persone")] },
+    Gruppo { nome: "Attività", icona: "🛠", colore: BLU, voci: &[v(S::Segnalazioni, None, "Segnalazioni guasto"), v(S::Pratiche, None, "Interventi, sinistri, legali")] },
+    Gruppo { nome: "Parti comuni", icona: "🏠", colore: VERDE, voci: &[v(S::Documenti, None, "Documenti e archivio")] },
+    Gruppo { nome: "Assemblee", icona: "👥", colore: ARANCIO, voci: &[v(S::Assemblee, None, "Assemblee e verbali")] },
+    Gruppo { nome: "Persone", icona: "👤", colore: ARANCIO, voci: &[v(S::Persone, None, "Persone")] },
     Gruppo {
         nome: "Fornitori",
         icona: "🚚",
+        colore: ARANCIO,
         voci: &[v(S::Fornitori, Some(0), "Fornitori"), v(S::Fornitori, Some(2), "Ritenute da versare")],
     },
+    Gruppo { nome: "Pubblica", icona: "🌐", colore: VERDE, voci: &[v(S::Bacheca, Some(0), "Bacheca e circolari"), v(S::Bacheca, Some(1), "Registro e-mail")] },
 ];
+
+/// Primo indice di gruppo di ogni blocco della barra (Agenda…Movimenti | Attività…Fornitori | Calc., Pubblica, Aiuto).
+pub const INIZIO_BLOCCO_2: usize = 7;
+pub const INIZIO_BLOCCO_3: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Cmd {
@@ -84,7 +103,7 @@ pub enum Cmd {
     Backup,
     Seleziona,
     Guida,
-    Tema,
+    Calcolatrice,
     Esci,
 }
 
@@ -115,7 +134,7 @@ pub static MENU: &[(&str, &[VoceMenu])] = &[
     (
         "Preventivo",
         &[
-            m("Piano dei conti e preventivo", Vai(S::Preventivo, Some(0)), ""),
+            m("Piano dei conti e preventivo", Vai(S::Conti, None), ""),
             m("Riparti e riduzioni", Vai(S::Preventivo, Some(3)), ""),
             m("Piani rate", Vai(S::PianiRate, None), ""),
             m("Delibere", Vai(S::Preventivo, Some(1)), ""),
@@ -153,10 +172,10 @@ pub static MENU: &[(&str, &[VoceMenu])] = &[
         "Strumenti",
         &[
             m("Importa fatture elettroniche…", Vai(S::Fornitori, Some(1)), ""),
-            m("Importa anagrafica da CSV…", Vai(S::Anagrafica, Some(0)), ""),
+            m("Importa anagrafica da CSV…", Vai(S::Persone, None), ""),
             m("Riconciliazione bancaria", Vai(S::Banca, None), ""),
             m("Opzioni e backup", Vai(S::Impostazioni, None), ""),
-            m("Tema chiaro / scuro", Cmd::Tema, ""),
+            m("Calcolatrice", Cmd::Calcolatrice, ""),
         ],
     ),
     ("?", &[m("Guida rapida e scorciatoie", Cmd::Guida, "F1")]),

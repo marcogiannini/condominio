@@ -1,3 +1,4 @@
+use super::elenco::*;
 use super::*;
 use crate::fornitori::*;
 
@@ -13,6 +14,10 @@ pub struct Stato {
     f_iva: String,
     pag_data: String,
     pag_conto: Option<i64>,
+    sel: Option<i64>,
+    tab_f: usize,
+    nuovo: bool,
+    cerca: String,
 }
 
 impl Default for Stato {
@@ -29,6 +34,10 @@ impl Default for Stato {
             f_iva: "0,00".into(),
             pag_data: data_it(&oggi_iso()),
             pag_conto: None,
+            sel: None,
+            tab_f: 0,
+            nuovo: false,
+            cerca: String::new(),
         }
     }
 }
@@ -42,7 +51,9 @@ fn nome_regime(r: &str) -> &'static str {
 }
 
 pub fn mostra(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
-    titolo(ui, "Fornitori, Fatture, Ritenute d'acconto");
+    if c.schede {
+        titolo(ui, "Fornitori, Fatture, Ritenute d'acconto");
+    }
     ui.horizontal(|ui| {
         if c.schede {
             ui.selectable_value(&mut st.tab, 0, "Fornitori");
@@ -54,7 +65,9 @@ pub fn mostra(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
             ui.selectable_value(&mut st.tab, 2, "Ritenute da versare (F24)");
         }
     });
-    ui.separator();
+    if c.schede {
+        ui.separator();
+    }
     let conti: Vec<(i64, String)> = c.db.elenco_conti_correnti(c.cond).unwrap_or_default().into_iter().map(|(i, n, _)| (i, n)).collect();
     if st.pag_conto.is_none() {
         st.pag_conto = conti.first().map(|x| x.0);
@@ -66,52 +79,103 @@ pub fn mostra(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
     }
 }
 
+const COLONNE_F: [Col; 5] = [col("Denominazione", 0.0), col("CF / P.IVA", 150.0), col("E-mail", 220.0), col("Fisco - Codice tributo", 160.0), col("IBAN", 240.0)];
+
+fn codice_tributo(f: &Fornitore) -> String {
+    match f.regime_ritenuta.as_str() {
+        "appalti4" => "1019 (4%)".into(),
+        "professionista20" => if f.soggetto_ires { "1250 (20%)".into() } else { "1040 (20%)".into() },
+        _ => String::new(),
+    }
+}
+
 fn fornitori(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
-    egui::Grid::new("g_forn").num_columns(2).show(ui, |ui| {
-        campo(ui, "Ragione sociale *", &mut st.form.ragione_sociale);
-        campo(ui, "CF / P.IVA", &mut st.form.cf_piva);
-        campo(ui, "E-mail", &mut st.form.email);
-        campo(ui, "IBAN", &mut st.form.iban);
-        ui.label("Regime ritenuta");
-        egui::ComboBox::from_id_salt("forn_reg").selected_text(nome_regime(&st.form.regime_ritenuta)).width(260.0).show_ui(ui, |ui| {
-            for r in REGIMI {
-                ui.selectable_value(&mut st.form.regime_ritenuta, r.to_string(), nome_regime(r));
-            }
-        });
-        ui.end_row();
-        ui.label("Soggetto a IRES");
-        ui.checkbox(&mut st.form.soggetto_ires, "(codice tributo 1250 invece di 1040)");
-        ui.end_row();
-    });
-    ui.horizontal(|ui| {
-        if ui.button(if st.form.id == 0 { "Aggiungi fornitore" } else { "Salva modifiche" }).clicked() {
-            st.form.condominio_id = c.cond;
-            let r = c.db.salva_fornitore(&st.form);
-            if c.esito(r, "Fornitore salvato").is_some() {
-                st.form = Fornitore { regime_ritenuta: "nessuna".into(), ..Default::default() };
-            }
-        }
-        if st.form.id != 0 && ui.button("Annulla").clicked() {
+    let tutti = c.db.elenco_fornitori(c.cond).unwrap_or_default();
+    let f = st.cerca.to_lowercase();
+    let lista: Vec<&Fornitore> = tutti.iter().filter(|x| f.is_empty() || x.ragione_sociale.to_lowercase().contains(&f) || x.cf_piva.to_lowercase().contains(&f) || x.email.to_lowercase().contains(&f)).collect();
+    let righe: Vec<Riga> = lista.iter().map(|x| Riga::new(vec![x.ragione_sociale.clone().into(), x.cf_piva.clone().into(), x.email.clone().into(), codice_tributo(x).into(), x.iban.clone().into()])).collect();
+    let selezionata = st.sel.and_then(|id| lista.iter().position(|x| x.id == id));
+    if st.sel.is_none() && !st.nuovo {
+        st.sel = lista.first().map(|x| x.id);
+    }
+    if !st.nuovo && st.sel.unwrap_or(0) != st.form.id {
+        st.form = st.sel.and_then(|id| tutti.iter().find(|x| x.id == id)).cloned().unwrap_or(Fornitore { regime_ritenuta: "nessuna".into(), ..Default::default() });
+    }
+
+    barra_azioni(ui, "az_forn", |ui| {
+        if azione(ui, "📄", BLU, "Nuovo") {
+            st.nuovo = true;
+            st.sel = None;
             st.form = Fornitore { regime_ritenuta: "nessuna".into(), ..Default::default() };
+            st.tab_f = 0;
+        }
+        if azione(ui, "📗", VERDE_ICONA, "Excel") {
+            esporta_csv(c, "fornitori", &COLONNE_F, &righe);
+        }
+        if azione(ui, "🧾", ARANCIO_ICONA, "Fatture") {
+            *c.app = Some(AzioneApp::Vai(Sezione::Fornitori, Some(1)));
+        }
+        if azione(ui, "💰", ROSSO_ICONA, "Ritenute da versare") {
+            *c.app = Some(AzioneApp::Vai(Sezione::Fornitori, Some(2)));
         }
     });
-    ui.separator();
-    egui::Grid::new("t_forn").striped(true).num_columns(5).show(ui, |ui| {
-        for h in ["Ragione sociale", "CF/P.IVA", "E-mail", "Regime", ""] {
-            ui.strong(h);
-        }
-        ui.end_row();
-        for f in c.db.elenco_fornitori(c.cond).unwrap_or_default() {
-            ui.label(&f.ragione_sociale);
-            ui.label(&f.cf_piva);
-            ui.label(&f.email);
-            ui.label(nome_regime(&f.regime_ritenuta));
-            if mini(ui, "Modifica") {
-                st.form = f.clone();
+
+    pannello_dettaglio(ui, "dett_forn", 440.0, |ui| {
+        schede(ui, &mut st.tab_f, &["Dati generali", "Movimenti"]);
+        ui.add_space(8.0);
+        if st.tab_f == 0 {
+            grid_scheda("g_forn").show(ui, |ui| {
+                campo_pieno(ui, "Rag. Soc. *", &mut st.form.ragione_sociale);
+                campo_pieno(ui, "Cod. fiscale / P.IVA", &mut st.form.cf_piva);
+                campo_pieno(ui, "E-mail", &mut st.form.email);
+                campo_pieno(ui, "IBAN", &mut st.form.iban);
+                ui.label("Ritenuta");
+                egui::ComboBox::from_id_salt("forn_reg").selected_text(nome_regime(&st.form.regime_ritenuta)).width(260.0).show_ui(ui, |ui| {
+                    for r in REGIMI {
+                        ui.selectable_value(&mut st.form.regime_ritenuta, r.to_string(), nome_regime(r));
+                    }
+                });
+                ui.end_row();
+                ui.label("");
+                ui.checkbox(&mut st.form.soggetto_ires, "Soggetto a IRES (codice tributo 1250 invece di 1040)");
+                ui.end_row();
+            });
+            ui.add_space(4.0);
+            if ui.button(if st.form.id == 0 { "Aggiungi fornitore" } else { "Salva modifiche" }).clicked() {
+                st.form.condominio_id = c.cond;
+                let r = c.db.salva_fornitore(&st.form);
+                if let Some(id) = c.esito(r, "Fornitore salvato") {
+                    st.sel = Some(id);
+                    st.nuovo = false;
+                }
             }
-            ui.end_row();
+        } else if st.form.id == 0 {
+            ui.label("Salva il fornitore per vederne i movimenti.");
+        } else {
+            let fatture: Vec<FatturaRiga> = c.db.elenco_fatture(c.cond, c.esercizio).unwrap_or_default().into_iter().filter(|x| x.fornitore == st.form.ragione_sociale).collect();
+            if fatture.is_empty() {
+                ui.label("Nessuna fattura in questo esercizio.");
+            }
+            egui::Grid::new("g_forn_mov").striped(true).num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+                for x in &fatture {
+                    ui.label(data_it(&x.data));
+                    ui.label(format!("{} {}", x.numero, x.descrizione));
+                    eur_colorato(ui, -x.totale());
+                    ui.label(&x.stato);
+                    ui.end_row();
+                }
+            });
         }
     });
+
+    barra_filtri(ui, Some(&mut st.cerca), |ui| {
+        ui.label(format!("Fornitori ({})", lista.len()));
+    });
+    let esito = elenco(ui, "t_forn", &COLONNE_F, &righe, selezionata, None);
+    if let Some(i) = esito.clic {
+        st.sel = Some(lista[i].id);
+        st.nuovo = false;
+    }
 }
 
 fn fatture(c: &mut Ctx, st: &mut Stato, ui: &mut Ui, conti: &[(i64, String)]) {

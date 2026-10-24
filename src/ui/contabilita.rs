@@ -1,3 +1,4 @@
+use super::elenco::*;
 use super::*;
 use crate::movimenti::{nome_origine, Movimento};
 
@@ -22,6 +23,9 @@ pub struct Stato {
     m_entrata: bool,
     m_voce: Option<i64>,
     cache: Cache<Vec<Movimento>>,
+    sel: Option<usize>,
+    nuovo: bool,
+    cerca: String,
 }
 
 impl Default for Stato {
@@ -45,31 +49,30 @@ impl Default for Stato {
             m_entrata: true,
             m_voce: None,
             cache: Cache::default(),
+            sel: None,
+            nuovo: false,
+            cerca: String::new(),
         }
     }
 }
 
-fn csv_campo(s: &str) -> String {
-    if s.contains(';') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
-}
 
 pub fn mostra(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
-    titolo(ui, "Conti e Movimenti di gestione");
-    ui.horizontal(|ui| {
-        if c.schede {
+    if c.schede {
+        titolo(ui, "Conti e Movimenti di gestione");
+        ui.horizontal(|ui| {
             ui.selectable_value(&mut st.tab, 0, "Conti correnti");
-        }
-        if c.schede {
             ui.selectable_value(&mut st.tab, 1, "Movimenti");
-        }
-    });
-    ui.separator();
+        });
+        ui.separator();
+    }
     match st.tab {
-        0 => conti(c, st, ui),
+        0 => {
+            if !c.schede {
+                ui.add_space(4.0);
+            }
+            conti(c, st, ui)
+        }
         _ => movimenti(c, st, ui),
     }
 }
@@ -130,10 +133,13 @@ fn conti(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
     }
 }
 
+const COLONNE_MOV: [Col; 5] = [col("Data", 90.0), col("Descrizione", 0.0), col_dx("Importo", 110.0), col("Tipo", 150.0), col("Conto", 170.0)];
+
 fn movimenti(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
     let conti: Vec<(i64, String)> = c.db.elenco_conti_correnti(c.cond).unwrap_or_default().into_iter().map(|(i, n, _)| (i, n)).collect();
     if conti.is_empty() {
-        ui.colored_label(ARANCIO, "Crea prima un conto corrente nella scheda «Conti correnti».");
+        ui.add_space(10.0);
+        ui.colored_label(ARANCIO, "Crea prima un conto corrente (Condomìni → Conti correnti).");
         return;
     }
     if st.m_conto.is_none() {
@@ -143,87 +149,115 @@ fn movimenti(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
         Some(es) => c.db.elenco_voci(es).unwrap_or_default().iter().map(|v| (v.id, format!("{} {}", v.codice, v.descrizione))).collect(),
         None => vec![],
     };
-
-    ui.collapsing("Nuovo movimento manuale (spese bancarie, interessi, saldo iniziale…)", |ui| {
-        egui::Grid::new("g_mov").num_columns(2).show(ui, |ui| {
-            ui.label("Conto");
-            scegli(ui, "mov_cc", &mut st.m_conto, &conti, "");
-            ui.end_row();
-            ui.label("Tipo");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut st.m_entrata, true, "Entrata");
-                ui.selectable_value(&mut st.m_entrata, false, "Uscita");
-            });
-            ui.end_row();
-            campo(ui, "Data (GG/MM/AAAA)", &mut st.m_data);
-            campo(ui, "Descrizione *", &mut st.m_descr);
-            campo(ui, "Importo (€)", &mut st.m_importo);
-            ui.label("Imputa a voce di spesa");
-            scegli(ui, "mov_voce", &mut st.m_voce, &voci, "(nessuna)");
-            ui.end_row();
-        });
-        ui.label(RichText::new("Con una voce di spesa il movimento entra nel consuntivo (uscita = costo, entrata = recupero).").small());
-        if ui.button("Registra movimento").clicked() {
-            match (st.m_conto, parse_eur(&st.m_importo), data_iso(&st.m_data)) {
-                (Some(cc), Some(imp), Some(d)) if imp > 0 => {
-                    let r = c.db.registra_movimento_manuale(c.cond, cc, &d, &st.m_descr, if st.m_entrata { imp } else { -imp }, st.m_voce);
-                    if c.esito(r, "Movimento registrato").is_some() {
-                        st.m_descr.clear();
-                        st.m_importo.clear();
-                    }
-                }
-                _ => c.errore("Controlla conto, data e importo (positivo)"),
-            }
-        }
-    });
-
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.label("Conto");
-        scegli(ui, "mov_f_cc", &mut st.f_conto, &conti, "Tutti");
-        ui.label("Dal");
-        ui.add(egui::TextEdit::singleline(&mut st.dal).hint_text("GG/MM/AAAA").desired_width(100.0));
-        ui.label("Al");
-        ui.add(egui::TextEdit::singleline(&mut st.al).hint_text("GG/MM/AAAA").desired_width(100.0));
-    });
     let dal = data_iso(&st.dal);
     let al = data_iso(&st.al);
     let (db, cond, fc) = (c.db, c.cond, st.f_conto);
     let chiave = format!("{:?}|{:?}|{:?}", fc, dal, al);
-    let movs: Vec<Movimento> = st.cache.get(*c.rev, &chiave, || db.elenco_movimenti(cond, fc, dal.as_deref(), al.as_deref()).unwrap_or_default()).clone();
+    let tutti: Vec<Movimento> = st.cache.get(*c.rev, &chiave, || db.elenco_movimenti(cond, fc, dal.as_deref(), al.as_deref()).unwrap_or_default()).clone();
+    let f = st.cerca.to_lowercase();
+    let movs: Vec<&Movimento> = tutti.iter().filter(|m| f.is_empty() || m.descrizione.to_lowercase().contains(&f) || m.conto.to_lowercase().contains(&f)).collect();
     let (entrate, uscite) = c.db.riepilogo_cassa(c.cond, dal.as_deref(), al.as_deref()).unwrap_or((0, 0));
+    let grigio = Color32::from_rgb(130, 130, 130);
+    let righe: Vec<Riga> = movs
+        .iter()
+        .map(|m| {
+            let spento = m.stornato || m.storno_di.is_some();
+            let t = |s: String| -> Cella {
+                if spento {
+                    colorata(s, grigio)
+                } else {
+                    s.into()
+                }
+            };
+            let descr = if m.stornato { format!("{} (stornato)", m.descrizione) } else { m.descrizione.clone() };
+            let imp = if spento { colorata(format_eur(m.importo), grigio) } else { cella_eur(m.importo) };
+            Riga::new(vec![t(data_it(&m.data)), t(descr), imp, t(nome_origine(&m.origine).to_string()), t(m.conto.clone())])
+        })
+        .collect();
+    let piede = Riga::new(vec![
+        forte(""),
+        forte(format!("Totale ({} movimenti)   Entrate {} · Uscite {}", movs.len(), format_eur(entrate), format_eur(uscite))),
+        if entrate - uscite < 0 { colorata(format_eur(entrate - uscite), ROSSO) } else { forte(format_eur(entrate - uscite)) },
+    ]);
+    if st.sel.map(|i| i >= righe.len()).unwrap_or(false) {
+        st.sel = None;
+    }
+    let scelto: Option<&Movimento> = st.sel.and_then(|i| movs.get(i).copied());
 
-    ui.horizontal_wrapped(|ui| {
-        ui.label(format!("Entrate: {}", format_eur(entrate)));
-        ui.separator();
-        ui.label(format!("Uscite: {}", format_eur(uscite)));
-        ui.separator();
-        ui.label(RichText::new(format!("Saldo periodo: {}", format_eur(entrate - uscite))).strong());
-        if ui.button("Esporta CSV").clicked() {
-            if let Some(p) = rfd::FileDialog::new().set_file_name("movimenti.csv").save_file() {
-                let mut s = String::from("data;conto;tipo;descrizione;entrata;uscita\n");
-                for m in &movs {
-                    s.push_str(&format!(
-                        "{};{};{};{};{};{}\n",
-                        data_it(&m.data),
-                        csv_campo(&m.conto),
-                        nome_origine(&m.origine),
-                        csv_campo(&m.descrizione),
-                        if m.importo > 0 { format_eur(m.importo) } else { String::new() },
-                        if m.importo < 0 { format_eur(-m.importo) } else { String::new() }
-                    ));
-                }
-                match std::fs::write(&p, s) {
-                    Ok(_) => c.ok("Movimenti esportati"),
-                    Err(e) => c.err(e.into()),
-                }
+    barra_azioni(ui, "az_mov", |ui| {
+        if azione(ui, "📄", BLU, "Nuovo") {
+            st.nuovo = true;
+        }
+        if azione(ui, "↩", ROSSO_ICONA, "Storna") {
+            match scelto {
+                Some(m) if !m.stornato && m.storno_di.is_none() => c.chiedi(&format!("Stornare il movimento «{}» di {}?", m.descrizione, format_eur(m.importo)), Azione::StornaMovimento(m.id)),
+                Some(_) => c.errore("Il movimento è già uno storno o è già stato stornato"),
+                None => c.errore("Seleziona un movimento"),
             }
         }
+        if azione(ui, "📗", VERDE_ICONA, "Excel") {
+            esporta_csv(c, "movimenti", &COLONNE_MOV, &righe);
+        }
+        if azione(ui, "📥", ARANCIO_ICONA, "Importa fatture") {
+            *c.app = Some(AzioneApp::Vai(Sezione::Fornitori, Some(1)));
+        }
+        if azione(ui, "🔔", ARANCIO_ICONA, "Scadenze fornitori") {
+            *c.app = Some(AzioneApp::Vai(Sezione::Agenda, None));
+        }
+    });
+
+    // finestra «nuovo movimento»
+    if st.nuovo {
+        let mut aperta = true;
+        egui::Window::new("Nuovo movimento manuale").open(&mut aperta).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ui.ctx(), |ui| {
+            ui.label(RichText::new("Spese bancarie, interessi, saldo iniziale…").small().weak());
+            egui::Grid::new("g_mov").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                ui.label("Conto");
+                scegli(ui, "mov_cc", &mut st.m_conto, &conti, "");
+                ui.end_row();
+                ui.label("Tipo");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut st.m_entrata, true, "Entrata");
+                    ui.selectable_value(&mut st.m_entrata, false, "Uscita");
+                });
+                ui.end_row();
+                campo(ui, "Data (GG/MM/AAAA)", &mut st.m_data);
+                campo(ui, "Descrizione *", &mut st.m_descr);
+                campo(ui, "Importo (€)", &mut st.m_importo);
+                ui.label("Imputa a voce di spesa");
+                scegli(ui, "mov_voce", &mut st.m_voce, &voci, "(nessuna)");
+                ui.end_row();
+            });
+            ui.label(RichText::new("Con una voce di spesa il movimento entra nel consuntivo (uscita = costo, entrata = recupero).").small());
+            if ui.button("Registra movimento").clicked() {
+                match (st.m_conto, parse_eur(&st.m_importo), data_iso(&st.m_data)) {
+                    (Some(cc), Some(imp), Some(d)) if imp > 0 => {
+                        let r = c.db.registra_movimento_manuale(c.cond, cc, &d, &st.m_descr, if st.m_entrata { imp } else { -imp }, st.m_voce);
+                        if c.esito(r, "Movimento registrato").is_some() {
+                            st.m_descr.clear();
+                            st.m_importo.clear();
+                            st.nuovo = false;
+                        }
+                    }
+                    _ => c.errore("Controlla conto, data e importo (positivo)"),
+                }
+            }
+        });
+        if !aperta {
+            st.nuovo = false;
+        }
+    }
+
+    barra_filtri(ui, Some(&mut st.cerca), |ui| {
+        ui.label("Conto");
+        scegli(ui, "mov_f_cc", &mut st.f_conto, &conti, "Tutti");
+        ui.label("Dal");
+        ui.add(egui::TextEdit::singleline(&mut st.dal).hint_text("GG/MM/AAAA").desired_width(90.0));
+        ui.label("Al");
+        ui.add(egui::TextEdit::singleline(&mut st.al).hint_text("GG/MM/AAAA").desired_width(90.0));
     });
     match c.db.verifica_movimenti(c.cond) {
-        Ok(v) if v.is_empty() => {
-            ui.colored_label(VERDE, "Movimenti coerenti con incassi, pagamenti e F24");
-        }
+        Ok(v) if v.is_empty() => {}
         Ok(v) => {
             for m in v {
                 ui.colored_label(ROSSO, m);
@@ -233,25 +267,10 @@ fn movimenti(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
             ui.colored_label(ROSSO, e.to_string());
         }
     }
-    ui.separator();
-    egui::Grid::new("t_mov").striped(true).num_columns(6).show(ui, |ui| {
-        for h in ["Data", "Conto", "Tipo", "Descrizione", "Importo", ""] {
-            ui.strong(h);
-        }
-        ui.end_row();
-        for m in &movs {
-            let t = |s: String| if m.stornato || m.storno_di.is_some() { RichText::new(s).weak() } else { RichText::new(s) };
-            ui.label(t(data_it(&m.data)));
-            ui.label(t(m.conto.clone()));
-            ui.label(t(nome_origine(&m.origine).to_string()));
-            ui.label(t(if m.stornato { format!("{} (stornato)", m.descrizione) } else { m.descrizione.clone() }));
-            eur_colorato(ui, m.importo);
-            if !m.stornato && m.storno_di.is_none() && mini(ui, "Storna") {
-                c.chiedi(&format!("Stornare il movimento «{}» di {}?", m.descrizione, format_eur(m.importo)), Azione::StornaMovimento(m.id));
-            }
-            ui.end_row();
-        }
-    });
+    let esito = elenco(ui, "t_mov", &COLONNE_MOV, &righe, st.sel, Some(&piede));
+    if let Some(i) = esito.clic {
+        st.sel = Some(i);
+    }
 }
 
 #[allow(dead_code)]

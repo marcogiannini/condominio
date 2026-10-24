@@ -6,11 +6,24 @@ pub struct Stato {
     smtp: Option<ConfigSmtp>,
     porta: String,
     conferma_elimina: bool,
+    studio: Option<String>,
 }
 
 
 pub fn mostra(c: &mut Ctx, st: &mut Stato, ui: &mut Ui) {
     titolo(ui, "Impostazioni e Backup");
+
+    ui.label(RichText::new("Studio / amministratore").strong());
+    let studio = st.studio.get_or_insert_with(|| c.db.leggi_imp("studio"));
+    ui.horizontal(|ui| {
+        ui.label("Nome mostrato nell'Agenda");
+        ui.add(egui::TextEdit::singleline(studio).desired_width(320.0));
+        if ui.button("Salva").clicked() {
+            let r = c.db.imposta("studio", studio.trim());
+            c.esito(r, "Nome dello studio salvato");
+        }
+    });
+    ui.separator();
 
     ui.label(RichText::new("Dati").strong());
     if let Some(p) = &c.db.percorso {
